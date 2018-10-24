@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: "Cross Region Scalable, ECS Cloud Formation Template"
+
+Metadata:
+  Author:
+    - Name: "Steve Peters"
+
+Parameters:
+  WebTaskImage:
+    Type: "String"
+    Description: "Url of the Docker Image to deploy"
+  VpcId:
+    Type: "AWS::EC2::VPC::Id"
+    Description: "Select a VPC that allows instances to the internet"
+  BastionSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup::Id"
+    Description: "Security Group ID of our Bastion Server"
+
+  SubnetIDs:
+    Type: "List<AWS::EC2::Subnet::Id>"
+    Description: "Select at least two subnets in yourselected VPC"
+  InstanceType:
+    Description: "EC2 instance type"
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - "t2.micro"
+      - "t2.small"
+      - "t2.medium"
+      - "t2.large"
+      - "m3.medium"
+      - "m3.large"
+      - "m3.xlarge"
+      - "m3.2xlarge"
+      - "m4.large"
+      - "m4.xlarge"
+      - "m4.2xlarge"
+      - "m4.4xlarge"
+      - "m4.10xlarge"
+      - "c4.large"
+      - "c4.xlarge"
+      - "c4.2xlarge"
+      - "c4.4xlarge"
+      - "c4.8xlarge"
+      - "c3.large"
+      - "c3.xlarge"
+      - "c3.2xlarge"
+      - "c3.4xlarge"
+      - "c3.8xlarge"
+      - "r3.large"
+      - "r3.xlarge"
+      - "r3.2xlarge"
+      - "r3.4xlarge"
+      - "r3.8xlarge"
+      - "i2.xlarge"
+      - "i2.2xlarge"
+      - "i2.4xlarge"
+      - "i2.8xlarge"
+    ConstraintDescription: "Please choose an instance type"
+Mappings:
+  AWSRegionECSAMI:
+    us-east-1:
+      AMI: ami-07eb698ce660402d2
+    us-east-2:
+      AMI: ami-0a0c6574ce16ce87a
+    us-west-1:
+      AMI: ami-04c22ba97a0c063c4
+    us-west-2:
+      AMI: ami-09568291a9d6c804c
+    eu-west-1:
+      AMI: ami-066826c6a40879d75
+    eu-west-2:
+      AMI: ami-0cb31bf24b130a0f9
+    eu-central-1:
+      AMI: ami-0b9fee3a2d0596ed1
+    ap-northeast-1:
+      AMI: ami-0edf19001c48838c7
+    ap-southeast-1:
+      AMI: ami-08d4fe232c67b81b8
+    ap-southeast-2:
+      AMI: ami-08c26730c8ee004fa
+    ca-central-1:
+      AMI: ami-055750f063052ec55
+Resources:
+  WebCluster:
+    Type: "AWS::ECS::Cluster"
+  WebALBSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Security Group for our web app load balancer"
+      VpcId:
+        Ref: "VpcId"
+      Tags:
+        - Key: "Name"
+          Value: "Web ALB Security Group"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  WebInstanceSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Security Group for our instances"
+      VpcId:
+        Ref: "VpcId"
+      Tags:
+        - Key: "Name"
+          Value: "Web Instances Security Group"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId:
+            Ref: "BastionSecurityGroup"
+        - IpProtocol: tcp
+          FromPort: 31000
+          ToPort: 61000
+          SourceSecurityGroupId:
+            Ref: "WebALBSecurityGroup"
+  WebInstanceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "WebEcsLogs"
+          PolicyDocument:
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:DescribeLogStreams"
+                Resource:
+                  - "arn:aws:logs:*:*:*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        - "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
+  WebServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ecs.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole"
+  WebAutoscalingRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "application-autoscaling.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole"
+  WebALB:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Name: "vpcity-web-alb"
+      Scheme: "internet-facing"
+      LoadBalancerAttributes:
+        - Key: "idle_timeout.timeout_seconds"
+          Value: "60"
+      SecurityGroups:
+        - Ref: "WebALBSecurityGroup"
+      Subnets:
+        Ref: "SubnetIDs"
+  WebALBListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      LoadBalancerArn:
+        Ref: "WebALB"
+      Port: 80
+      Protocol: "HTTP"
+      DefaultActions:
+        - Type: "forward"
+          TargetGroupArn:
+            Ref: "WebALBTargetGroup"
+  WebALBListenerRule:
+    Type: "AWS::ElasticLoadBalancingV2::ListenerRule"
+    DependsOn: "WebALBListener"
+    Properties:
+      ListenerArn:
+        Ref: "WebALBListener"
+      Actions:
+        - Type: "forward"
+          TargetGroupArn:
+            Ref: "WebALBTargetGroup"
+      Conditions:
+        - Field: "path-pattern"
+          Values:
+            - "/"
+      Priority: 1
+  WebALBTargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    DependsOn: "WebALB"
+    Properties:
+      HealthCheckPath: "/health-alb"
+      HealthCheckProtocol: "HTTP"
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: "HTTP"
+      VpcId:
+        Ref: "VpcId"
+  WebInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Roles:
+        - Ref: "WebInstanceRole"
+  WebLaunchConfig:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Properties:
+      ImageId: !FindInMap
+        - AWSRegionECSAMI
+        - !Ref "AWS::Region"
+        - AMI
+      InstanceType:
+        Ref: "InstanceType"
+      IamInstanceProfile:
+        Ref: "WebInstanceProfile"
+      SecurityGroups:
+        Ref: "WebInstanceSecurityGroup"
+      KeyName:
+        Ref: "KeyPairName"
+Outputs:
+  ECSCluster:
+    Description: "The name of our newly created cluster"
+    Value:
+      Ref: "WebCluster"
