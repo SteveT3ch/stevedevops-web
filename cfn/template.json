@@ -776,7 +776,7 @@
       "Condition": "CreateAutoScalingResources",
       "Properties": {
         "AdjustmentType": "ChangeInCapacity",
-        "Cooldown": 300,
+        "Cooldown": "300",
         "PolicyType": "SimpleScaling",
         "ScalingAdjustment": 1,
         "AutoScalingGroupName": { "Ref": "WebAutoscalingGroup" }

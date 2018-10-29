@@ -58,6 +58,38 @@ Parameters:
       - "i2.4xlarge"
       - "i2.8xlarge"
     ConstraintDescription: "Please choose an instance type"
+  KeyPairName:
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Description: "Name of an existing EC2 keypair to enable ssh on instances"
+  DesiredCapacity:
+    Type: "Number"
+    Default: 1
+    Description: "Number of Instances to launch in our cluster"
+  MinSize:
+    Type: "Number"
+    Default: 1
+    Description: "Minimum number of instances that can be launched in your ECS Cluster"
+  MaxSize:
+    Type: "Number"
+    Default: 1
+    Description: "Maximum number of instances that can be launched in your ECS Cluster"
+  DesiredTaskCount:
+    Type: "Number"
+    Default: "1"
+    Description: "Desired count of service task to launch in Cluster"
+  MinTaskCount:
+    Type: "Number"
+    Default: 1
+    Description: "Min Number of service tasks to scale down to."
+  MaxTaskCount:
+    Type: "Number"
+    Default: 1
+    Description: "Max number of service tasks to scale up to."
+  AutoScale:
+    Type: "String"
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    ConstraintDescription: "true or false only"
 Mappings:
   AWSRegionECSAMI:
     us-east-1:
@@ -82,6 +114,11 @@ Mappings:
       AMI: ami-08c26730c8ee004fa
     ca-central-1:
       AMI: ami-055750f063052ec55
+Conditions:
+  CreateAutoScalingResources:
+    Fn::Equals:
+      - Ref: "AutoScale"
+      - "true"
 Resources:
   WebCluster:
     Type: "AWS::ECS::Cluster"
@@ -237,9 +274,345 @@ Resources:
       IamInstanceProfile:
         Ref: "WebInstanceProfile"
       SecurityGroups:
-        Ref: "WebInstanceSecurityGroup"
+        - Ref: "WebInstanceSecurityGroup"
       KeyName:
         Ref: "KeyPairName"
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - "Content-Type: multipart/mixed; boundary=\"==BOUNDARY==\"\n"
+              - "MIME-Version: 1.0\n"
+              - "\n"
+              - "--==BOUNDARY==\n"
+              - "MIME-Version: 1.0\n"
+              - "Content-Type: text/x-shellscript; charset=\"us-ascii\"\n"
+              - "#!/usr/bin/env bash\n"
+              - "\n"
+              - "# This Script can be found at https://github.com/jcolemorrison/ecs-admin-helpers\n"
+              - "echo ECS_CLUSTER="
+              - Ref: WebCluster
+              - " >> /etc/ecs/ecs.config\n"
+              - "\n"
+              - "yum install -y awslogs jq\n"
+              - "mv /etc/awslogs/awslogs.conf /etc/awslogs/awslogs.conf.bak\n"
+              - "cat > /etc/awslogs/awslogs.conf <<- EOF\n"
+              - "[general]\n"
+              - "state_file = /var/lib/awslogs/agent-state\n"
+              - "\n"
+              - "[/var/log/dmesg]\n"
+              - "file = /var/log/dmesg\n"
+              - "log_group_name = /var/log/dmesg\n"
+              - "log_stream_name = {cluster}/{container_instance_id}\n"
+              - "\n"
+              - "[/var/log/messages]\n"
+              - "file = /var/log/messages\n"
+              - "log_group_name = /var/log/messages\n"
+              - "log_stream_name = {cluster}/{container_instance_id}\n"
+              - "datetime_format = %b %d %H:%M:%S\n"
+              - "\n"
+              - "[/var/log/docker]\n"
+              - "file = /var/log/docker\n"
+              - "log_group_name = /var/log/docker\n"
+              - "log_stream_name = {cluster}/{container_instance_id}\n"
+              - "datetime_format = %Y-%m-%dT%H:%M:%S.%f\n"
+              - "\n"
+              - "[/var/log/ecs/ecs-init.log]\n"
+              - "file = /var/log/ecs/ecs-init.log.*\n"
+              - "log_group_name = /var/log/ecs/ecs-init.log\n"
+              - "log_stream_name = {cluster}/{container_instance_id}\n"
+              - "datetime_format = %Y-%m-%dT%H:%M:%SZ\n"
+              - "\n"
+              - "[/var/log/ecs/ecs-agent.log]\n"
+              - "file = /var/log/ecs/ecs-agent.log.*\n"
+              - "log_group_name = /var/log/ecs/ecs-agent.log\n"
+              - "log_stream_name = {cluster}/{container_instance_id}\n"
+              - "datetime_format = %Y-%m-%dT%H:%M:%SZ\n"
+              - "\n"
+              - "[/var/log/ecs/audit.log]\n"
+              - "file = /var/log/ecs/audit.log.*\n"
+              - "log_group_name = /var/log/ecs/audit.log\n"
+              - "log_stream_name = {cluster}/{container_instance_id}\n"
+              - "datetime_format = %Y-%m-%dT%H:%M:%SZ\n"
+              - "\n"
+              - "EOF\n"
+              - "\n"
+              - "region=$(curl 169.254.169.254/latest/meta-data/placement/availability-zone | sed s'/.$//')\n"
+              - "sed -i -e \"s/region = us-east-1/region = $region/g\" /etc/awslogs/awscli.conf\n"
+              - "\n"
+              - "yum install -y https://amazon-ssm-$region.s3.amazonaws.com/latest/linux_amd64/amazon-ssm-agent.rpm\n"
+              - "\n"
+              - "yum install -y aws-cfn-bootstrap\n"
+              - "/opt/aws/bin/cfn-signal -e $? "
+              - "         --stack "
+              - Ref: "AWS::StackName"
+              - "         --resource WebAutoscalingGroup "
+              - "         --region "
+              - Ref: "AWS::Region"
+              - "\n"
+              - "--==BOUNDARY==\n"
+              - "MIME-Version: 1.0\n"
+              - "Content-Type: text/upstart-job; charset=\"us-ascii\"\n"
+              - "\n"
+              - "#upstart-job\n"
+              - "description \"Configure and start CloudWatch Logs agent on Amazon ECS container instance\"\n"
+              - "author \"Amazon Web Services\"\n"
+              - "start on started ecs\n"
+              - "\n"
+              - "script\n"
+              - "  exec 2>>/var/log/ecs/cloudwatch-logs-start.log\n"
+              - "  set -x\n"
+              - "  \n"
+              - "  until curl -s http://localhost:51678/v1/metadata\n"
+              - "  do\n"
+              - "    sleep 1 \n"
+              - "  done\n"
+              - "  \n"
+              - "  cluster=$(curl -s http://localhost:51678/v1/metadata | jq -r '. | .Cluster')\n"
+              - "  container_instance_id=$(curl -s http://localhost:51678/v1/metadata | jq -r '. | .ContainerInstanceArn' | awk -F/ '{print $2}' )\n"
+              - "  sed -i -e \"s/{cluster}/$cluster/g\" /etc/awslogs/awslogs.conf\n"
+              - "  sed -i -e \"s/{container_instance_id}/$container_instance_id/g\" /etc/awslogs/awslogs.conf\n"
+              - "  \n"
+              - "  service awslogs start\n"
+              - "  chkconfig awslogs on\n"
+              - "end script\n"
+              - "--==BOUNDARY==--\n"
+  WebAutoscalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      LaunchConfigurationName:
+        Ref: "WebLaunchConfig"
+      DesiredCapacity:
+        Ref: "DesiredCapacity"
+      MinSize:
+        Ref: "MinSize"
+      MaxSize:
+        Ref: "MaxSize"
+      VPCZoneIdentifier:
+        Ref: "SubnetIDs"
+      Tags:
+        - Key: "Name"
+          Value:
+            Fn::Join:
+              - "-"
+              - - Ref: "WebCluster"
+                - "Instance"
+          PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Count:
+          Ref: "DesiredCapacity"
+        Timeout: "PT15M"
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+  WebTaskLogs:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - "-"
+          - - Ref: "AWS::StackName"
+            - "WebTaskLogs"
+      RetentionInDays: 14
+  WebTaskDefinition:
+    Type: "AWS::ECS::TaskDefinition"
+    Properties:
+      Family:
+        Fn::Join:
+          - ""
+          - - Ref: "AWS::StackName"
+            - "-web-task"
+      ContainerDefinitions:
+        - Name:
+            Fn::Join:
+              - ""
+              - - Ref: "AWS::StackName"
+                - "-web-task-container"
+          Image:
+            Ref: "WebTaskImage"
+          MemoryReservation: 300
+          Cpu: 256
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: "tcp"
+          LogConfiguration:
+            LogDriver: "awslogs"
+            Options:
+              awslogs-group:
+                Ref: "WebTaskLogs"
+              awslogs-region:
+                Ref: "AWS::Region"
+              awslogs-stream-prefix:
+                Fn::Join:
+                  - ""
+                  - - Ref: "AWS::StackName"
+                    - "-web-task-container"
+  WebService:
+    Type: "AWS::ECS::Service"
+    DependsOn: "WebALBListener"
+    Properties:
+      Cluster:
+        Ref: "WebCluster"
+      DesiredCount:
+        Ref: DesiredTaskCount
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+      LoadBalancers:
+        - ContainerName:
+            Fn::Join:
+              - ""
+              - - Ref: "AWS::StackName"
+                - "-web-task-container"
+          ContainerPort: 80
+          TargetGroupArn:
+            Ref: "WebALBTargetGroup"
+      PlacementStrategies:
+        - Type: "spread"
+          Field: "attribute:ecs.availability-zone"
+        - Type: "spread"
+          Field: "instanceId"
+      Role:
+        Ref: "WebServiceRole"
+      TaskDefinition:
+        Ref: "WebTaskDefinition"
+  WebServiceCpuAbove40:
+    Type: "AWS::CloudWatch::Alarm"
+    Condition: "CreateAutoScalingResources"
+    Properties:
+      Period: 60
+      EvaluationPeriods: 5
+      Statistic: "Average"
+      Threshold: 40
+      AlarmDescription: "As our CPU utilization fluctuates above 40"
+      ComparisonOperator: "GreaterThanThreshold"
+      AlarmActions:
+        - Ref: "WebServiceIncreasePolicy"
+      Namespace: "AWS/ECS"
+      Dimensions:
+        - Name: "ClusterName"
+          Value:
+            Ref: "WebCluster"
+        - Name: "ServiceName"
+          Value:
+            Fn::GetAtt:
+              - WebService
+              - Name
+      MetricName: "CPUUtilization"
+  WebServiceIncreasePolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Condition: "CreateAutoScalingResources"
+    Properties:
+      PolicyName:
+        Fn::Join:
+          - "-"
+          - - Ref: "AWS::StackName"
+            - "WebServiceIncreaseStepPolicy"
+      ScalingTargetId:
+        Ref: "WebServiceScalingTarget"
+      PolicyType: "StepScaling"
+      StepScalingPolicyConfiguration:
+        AdjustmentType: "ChangeInCapacity"
+        Cooldown: 300
+        MetricAggregationType: "Average"
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            MetricIntervalUpperBound: 10
+            ScalingAdjustment: 0
+          - MetricIntervalLowerBound: 10
+            MetricIntervalUpperBound: 20
+            ScalingAdjustment: 1
+          - MetricIntervalLowerBound: 20
+            ScalingAdjustment: 2
+  WebServiceScalingTarget:
+    Type: "AWS::ApplicationAutoScaling::ScalableTarget"
+    Condition: "CreateAutoScalingResources"
+    DependsOn: "WebService"
+    Properties:
+      MinCapacity:
+        Ref: "MinTaskCount"
+      MaxCapacity:
+        Ref: "MaxTaskCount"
+      ResourceId:
+        Fn::Join:
+          - "/"
+          - - "service"
+            - Ref: "WebCluster"
+            - Fn::GetAtt:
+                - WebService
+                - Name
+      RoleARN:
+        Fn::GetAtt:
+          - "WebAutoscalingRole"
+          - "Arn"
+      ScalableDimension: "ecs:service:DesiredCount"
+      ServiceNamespace: "ecs"
+  WebInstancesCpuAbove50:
+    Type: "AWS::CloudWatch::Alarm"
+    Condition: "CreateAutoScalingResources"
+    Properties:
+      Period: 60
+      EvaluationPeriods: 5
+      Statistic: "Average"
+      Threshold: 50
+      AlarmDescription: "If our cpu utilization goes above 50"
+      AlarmActions:
+        - Ref: "WebInstancesScaleUpPolicy"
+      Namespace: "AWS/ECS"
+      Dimensions:
+        - Name: "ClusterName"
+          Value:
+            Ref: "WebCluster"
+      ComparisonOperator: "GreaterThanThreshold"
+      MetricName: "CPUUtilization"
+  WebInstancesScaleUpPolicy:
+    Type: "AWS::AutoScaling::ScalingPolicy"
+    Condition: "CreateAutoScalingResources"
+    Properties:
+      AdjustmentType: "ChangeInCapacity"
+      Cooldown: "300"
+      PolicyType: "SimpleScaling"
+      ScalingAdjustment: 1
+      AutoScalingGroupName:
+        Ref: "WebAutoscalingGroup"
+  WebInstancesCpuBelow50:
+    Type: "AWS::CloudWatch::Alarm"
+    Condition: "CreateAutoScalingResources"
+    Properties:
+      Period: 60
+      EvaluationPeriods: 5
+      Statistic: "Average"
+      Threshold: 50
+      AlarmDescription: "If our cluster CPU utilization goes below 50"
+      AlarmActions:
+        - Ref: "WebInstancesScaleDownPolicy"
+      Namespace: "AWS/ECS"
+      Dimensions:
+        - Name: "ClusterName"
+          Value:
+            Ref: "WebCluster"
+      ComparisonOperator: "LessThanThreshold"
+      MetricName: "CPUUtilization"
+  WebInstancesScaleDownPolicy:
+    Type: "AWS::AutoScaling::ScalingPolicy"
+    Condition: "CreateAutoScalingResources"
+    Properties:
+      AdjustmentType: "ChangeInCapacity"
+      AutoScalingGroupName:
+        Ref: "WebAutoscalingGroup"
+      PolicyType: "StepScaling"
+      EstimatedInstanceWarmup: 300
+      StepAdjustments:
+        - MetricIntervalLowerBound: -10
+          MetricIntervalUpperBound: 0
+          ScalingAdjustment: 0
+        - MetricIntervalLowerBound: -20
+          MetricIntervalUpperBound: -10
+          ScalingAdjustment: -1
+        - MetricIntervalUpperBound: -20
+          ScalingAdjustment: -2
 Outputs:
   ECSCluster:
     Description: "The name of our newly created cluster"
